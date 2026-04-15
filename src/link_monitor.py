@@ -2,7 +2,7 @@ import time
 import RNS
 
 class LinkMonitor:
-    def __init__(self, target_aspect="solar-ref-node.service"):
+    def __init__(self, target_aspect="mooring-swap.service"):
         self.target = target_aspect
         self.link = None
         self.last_rssi = None
