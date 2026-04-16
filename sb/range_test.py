@@ -1,6 +1,6 @@
 # range_tester.py
 # Sideband Plugin for Mooring-SWAP Range Testing
-# Place in Sideband/plugins/ directory
+# Place in your Sideband plugins folder
 
 import time
 import threading
@@ -8,58 +8,48 @@ import csv
 import io
 from datetime import datetime
 
-# Sideband plugin imports
-from sbapp.plugin import SidebandServicePlugin, SidebandTelemetryPlugin, SidebandCommandPlugin
-
-# Reticulum imports
+# Reticulum imports (these are available in Sideband's environment)
 import RNS
 import LXMF
 
 
 class RangeTesterService(SidebandServicePlugin):
     """Background service that sends periodic pings and records results."""
-
     service_name = "range_tester_service"
 
     def __init__(self, sideband_core):
         super().__init__(sideband_core)
         self.is_running = False
-        self.ping_interval = 10  # seconds
+        self.ping_interval = 10
         self.base_hash = None
         self.worker_thread = None
         self.remote_rssi = None
         self.remote_snr = None
         self.reply_received = False
-        self.results = []  # list of dicts with timestamp, lat, lon, local_rssi, local_snr, remote_rssi, remote_snr
+        self.results = []
 
-        # Reticulum / LXMF setup
         self.identity = None
         self.lxmf_router = None
         self.server_dest = None
-
-        # Telemetry reference
         self.telemetry_plugin = None
 
     def start(self):
-        """Start the background service thread."""
         if self.is_running:
             return
         self.is_running = True
         self.worker_thread = threading.Thread(target=self._run, daemon=True)
         self.worker_thread.start()
-        self.log("RangeTester service started.")
+        RNS.log("RangeTester service started.", RNS.LOG_INFO)
         super().start()
 
     def stop(self):
-        """Stop the background service."""
         self.is_running = False
         if self.worker_thread:
             self.worker_thread.join(timeout=2.0)
-        self.log("RangeTester service stopped.")
+        RNS.log("RangeTester service stopped.", RNS.LOG_INFO)
         super().stop()
 
     def _init_reticulum(self):
-        """Initialize Reticulum and LXMF."""
         if self.identity is None:
             self.identity = RNS.Identity()
         if self.lxmf_router is None:
@@ -70,7 +60,6 @@ class RangeTesterService(SidebandServicePlugin):
             self.lxmf_router.register_delivery_callback(self._on_lxmf_message)
 
     def _create_server_dest(self, hash_str):
-        """Create a destination object from the server hash."""
         hash_bytes = bytes.fromhex(hash_str)
         fake_id = RNS.Identity(create_keys=False)
         fake_id.hash = hash_bytes
@@ -84,7 +73,6 @@ class RangeTesterService(SidebandServicePlugin):
         )
 
     def _on_lxmf_message(self, message):
-        """Handle incoming LXMF messages (PONG replies)."""
         try:
             content = message.content.decode('utf-8')
             if content.startswith("PONG:"):
@@ -97,7 +85,6 @@ class RangeTesterService(SidebandServicePlugin):
             pass
 
     def _get_current_location(self):
-        """Get current GPS coordinates from telemetry plugin."""
         if self.telemetry_plugin and hasattr(self.telemetry_plugin, 'last_location'):
             loc = self.telemetry_plugin.last_location
             if loc and loc.get('latitude') and loc.get('longitude'):
@@ -105,21 +92,16 @@ class RangeTesterService(SidebandServicePlugin):
         return None, None
 
     def _send_ping(self):
-        """Send a single ping and record results."""
         if not self.base_hash or not self.lxmf_router:
             return
-
         if self.server_dest is None:
             self.server_dest = self._create_server_dest(self.base_hash)
 
         self.reply_received = False
         self.remote_rssi = None
         self.remote_snr = None
-
-        # Get location
         lat, lon = self._get_current_location()
 
-        # Send raw packet to get local stats
         link = RNS.Link(self.server_dest)
         local_rssi = None
         local_snr = None
@@ -131,7 +113,6 @@ class RangeTesterService(SidebandServicePlugin):
                 local_rssi = receipt.get_rssi()
                 local_snr = receipt.get_snr()
 
-        # Send LXMF PING
         msg = LXMF.LXMessage(
             self.server_dest,
             "PING",
@@ -140,13 +121,11 @@ class RangeTesterService(SidebandServicePlugin):
         )
         self.lxmf_router.handle_outbound(msg)
 
-        # Wait for reply
         waited = 0
         while not self.reply_received and waited < 12:
             time.sleep(0.2)
             waited += 0.2
 
-        # Store result
         timestamp = datetime.now().isoformat(timespec='milliseconds')
         self.results.append({
             'timestamp': timestamp,
@@ -158,14 +137,12 @@ class RangeTesterService(SidebandServicePlugin):
             'remote_snr': self.remote_snr
         })
 
-        # Trim old results if too many (keep last 2000)
         if len(self.results) > 2000:
             self.results = self.results[-2000:]
 
-        self.log(f"Ping: local RSSI={local_rssi} remote RSSI={self.remote_rssi}")
+        RNS.log(f"Ping: local RSSI={local_rssi} remote RSSI={self.remote_rssi}", RNS.LOG_DEBUG)
 
     def _run(self):
-        """Main service loop."""
         self._init_reticulum()
         while self.is_running:
             if self.base_hash:
@@ -173,10 +150,8 @@ class RangeTesterService(SidebandServicePlugin):
             time.sleep(self.ping_interval)
 
     def export_csv(self):
-        """Export results as CSV string."""
         if not self.results:
             return "No data collected yet."
-
         output = io.StringIO()
         writer = csv.writer(output)
         writer.writerow(['Timestamp', 'Latitude', 'Longitude', 'Local_RSSI_dBm', 'Local_SNR_dB',
@@ -193,26 +168,17 @@ class RangeTesterService(SidebandServicePlugin):
             ])
         return output.getvalue()
 
-    def log(self, message):
-        """Log a message via Sideband's logger."""
-        if hasattr(self.sideband_core, 'log'):
-            self.sideband_core.log(f"[RangeTester] {message}")
-
 
 class RangeTesterTelemetry(SidebandTelemetryPlugin):
     """Telemetry plugin to provide GPS location."""
-
     plugin_name = "range_tester_telemetry"
     last_location = {'latitude': None, 'longitude': None}
 
     def update_telemetry(self, telemeter):
         if telemeter is None:
             return
-
-        # Ensure location sensor is enabled
         if "location" not in telemeter.sensors:
             telemeter.synthesize("location")
-
         loc_sensor = telemeter.sensors.get("location")
         if loc_sensor and loc_sensor.latitude is not None and loc_sensor.longitude is not None:
             self.last_location['latitude'] = loc_sensor.latitude
@@ -221,7 +187,6 @@ class RangeTesterTelemetry(SidebandTelemetryPlugin):
 
 class RangeTesterCommand(SidebandCommandPlugin):
     """Command plugin to control the range tester."""
-
     command_name = "range_test"
 
     def __init__(self, sideband_core):
@@ -230,9 +195,7 @@ class RangeTesterCommand(SidebandCommandPlugin):
         self.telemetry_plugin = None
 
     def _get_service_plugin(self):
-        """Find or create the service plugin."""
         if self.service_plugin is None:
-            # Check if already registered
             for plugin in self.sideband_core.plugins:
                 if hasattr(plugin, 'service_name') and plugin.service_name == "range_tester_service":
                     self.service_plugin = plugin
@@ -243,7 +206,6 @@ class RangeTesterCommand(SidebandCommandPlugin):
         return self.service_plugin
 
     def _get_telemetry_plugin(self):
-        """Find or create the telemetry plugin."""
         if self.telemetry_plugin is None:
             for plugin in self.sideband_core.plugins:
                 if hasattr(plugin, 'plugin_name') and plugin.plugin_name == "range_tester_telemetry":
@@ -255,14 +217,12 @@ class RangeTesterCommand(SidebandCommandPlugin):
         return self.telemetry_plugin
 
     def handle_command(self, arguments, lxm):
-        """Process user commands."""
         if not arguments:
             return "Usage: range_test <start|stop|export|status> [base_hash] [interval]"
-
         action = arguments[0].lower()
         service = self._get_service_plugin()
         telemetry = self._get_telemetry_plugin()
-        service.telemetry_plugin = telemetry  # link for GPS access
+        service.telemetry_plugin = telemetry
 
         if action == "start":
             if len(arguments) < 2:
@@ -288,9 +248,7 @@ class RangeTesterCommand(SidebandCommandPlugin):
                 return "Not running."
 
         elif action == "export":
-            csv_data = service.export_csv()
-            # Send as a message (Sideband will display it)
-            return f"CSV data:\n{csv_data}"
+            return f"CSV data:\n{service.export_csv()}"
 
         else:
             return "Unknown action. Use start, stop, status, or export."
